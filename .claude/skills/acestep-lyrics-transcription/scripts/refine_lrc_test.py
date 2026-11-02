@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from refine_lrc import format_lrc, parse_lrc, refine_lines, sound_intervals  # noqa: E402
+from refine_lrc import drop_blips, drop_stacked, end_markers, format_lrc, parse_lrc, refine_lines, sound_intervals  # noqa: E402
 
 
 class RefineLrcTests(unittest.TestCase):
@@ -48,6 +48,44 @@ class RefineLrcTests(unittest.TestCase):
         lines = [(1.0, "[Chorus]"), (1.0, "la")]
         self.assertEqual([(1.0, "la")], refine_lines(lines, [(0.0, 5.0)], 5.0)[0])
         self.assertEqual(2, len(refine_lines(lines, [(0.0, 5.0)], 5.0, keep_tags=True)[0]))
+
+
+    def test_stacked_lines_keep_only_the_last(self):
+        """Lines crammed onto one moment cannot be read: only the last of the stack stays."""
+        kept, dropped = drop_stacked([(10.0, "a"), (45.52, "b"), (45.52, "c"), (45.76, "d")])
+        self.assertEqual([(10.0, "a"), (45.76, "d")], kept)
+        self.assertEqual([(45.52, "b"), (45.52, "c")], dropped)
+
+    def test_end_marker_where_the_vocals_stop(self):
+        """After the last line a marker ends it at the end of its vocal stretch."""
+        markers = end_markers([(18.0, "a"), (25.0, "b")], [(18.0, 23.0), (25.0, 28.0)], 60.0)
+        self.assertEqual([(23.0, ""), (28.0, "")], markers)
+
+    def test_no_marker_when_the_next_line_follows_closely(self):
+        """A pause of at most 1 s before the next line does not hide the current line."""
+        markers = end_markers([(18.0, "a"), (29.0, "b")], [(18.0, 28.5), (29.0, 40.0)], 40.0)
+        self.assertEqual([], markers)
+
+    def test_marker_when_the_pause_is_long(self):
+        """A pause longer than 1 s before the next line ends the current line at the end of its stretch."""
+        markers = end_markers([(18.0, "a"), (30.0, "b")], [(18.0, 22.0), (30.0, 40.0)], 40.0)
+        self.assertEqual([(22.0, "")], markers)
+
+    def test_marker_is_written_as_an_empty_timestamp(self):
+        """format_lrc keeps empty-text markers as bare timestamps."""
+        self.assertEqual("[00:23.00]\n", format_lrc([(23.0, "")]))
+
+
+    def test_short_blips_do_not_count_as_singing(self):
+        """A leak of 0.3 s is dropped, so a line is not snapped onto it; real stretches stay."""
+        self.assertEqual([(18.0, 23.0)], drop_blips([(8.5, 8.8), (18.0, 23.0)]))
+
+    def test_line_snaps_past_a_blip_to_the_real_onset(self):
+        """With the blip removed, a line starting before it moves to the real vocal onset."""
+        sound = drop_blips([(8.5, 8.8), (18.0, 23.0)])
+        kept, dropped, moved = refine_lines([(0.24, "x"), (30.0, "y")], sound, 60.0)
+        self.assertEqual([(18.0, "x")], kept)
+        self.assertEqual([(30.0, "y")], dropped)
 
 
 if __name__ == "__main__":

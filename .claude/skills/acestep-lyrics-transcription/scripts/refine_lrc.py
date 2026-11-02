@@ -6,7 +6,9 @@ sang and pins the first line to 0:00 during an instrumental intro. This script
 detects where vocals actually sound (ffmpeg silencedetect) and then:
   * snaps a line that starts in silence forward to the next vocal onset,
   * drops a line whose time window holds no vocals at all,
-  * strips section tags such as [Verse] (unless --keep-tags).
+  * strips section tags such as [Verse] (unless --keep-tags),
+  * drops lines stacked on one moment (they could never be read) and writes an empty-text
+    timestamp where the vocals stop, the standard LRC way to end a line.
 
 Usage: refine_lrc.py <audio> <lrc> [--vocals stem.mp3] [--out refined.lrc]
        [--noise-db -38] [--min-silence 0.5] [--keep-tags]
@@ -53,6 +55,11 @@ def sound_intervals(silences, duration):
     return sound
 
 
+def drop_blips(sound, min_length=0.6):
+    """Ignore stretches of "sound" shorter than min_length: separation leaks (a hi-hat, a snare) are not singing."""
+    return [(s, e) for s, e in sound if e - s >= min_length]
+
+
 def refine_lines(lines, sound, duration, keep_tags=False):
     """Snap lines to vocal onsets and drop lines without vocals.
 
@@ -76,6 +83,37 @@ def refine_lines(lines, sound, duration, keep_tags=False):
     return kept, dropped, moved
 
 
+def drop_stacked(kept, min_gap=0.35):
+    """Drop lines that start less than min_gap before the next line: they could never be read.
+
+    The DiT aligner crams lines the model never sang onto one timestamp; keeping only the last of
+    such a stack avoids 0-second flashes. Returns (kept, dropped).
+    """
+    keep, dropped = [], []
+    for i, (start, text) in enumerate(kept):
+        if i + 1 < len(kept) and kept[i + 1][0] - start < min_gap:
+            dropped.append((start, text))
+        else:
+            keep.append((start, text))
+    return keep, dropped
+
+
+def end_markers(kept, sound, duration, min_gap=1.0):
+    """Empty-text timestamps (standard LRC "line ends here") where the vocals stop for good.
+
+    A marker is placed at the end of the vocal stretch a line starts in, but only if the next line
+    begins more than min_gap later (or there is no next line), so a pause between two lines hides
+    the old line and a long silence after the last line does not leave it on screen.
+    """
+    markers = []
+    for i, (start, _text) in enumerate(kept):
+        nxt = kept[i + 1][0] if i + 1 < len(kept) else duration
+        stretch_end = next((e for s, e in sound if s <= start + 0.05 < e), None)
+        if stretch_end is not None and nxt - stretch_end > min_gap:
+            markers.append((stretch_end, ""))
+    return markers
+
+
 def detect_silences(vocals, noise_db, min_silence):
     """Run ffmpeg silencedetect and return ((kind, time) events, duration)."""
     probe = subprocess.run(
@@ -91,7 +129,8 @@ def detect_silences(vocals, noise_db, min_silence):
 
 def separate_vocals(audio, workdir):
     """Separate vocals with demucs and return the vocals stem path."""
-    subprocess.run(["demucs", "--two-stems=vocals", "-o", workdir, "--mp3", audio],
+    # --shifts 0: no random time shifts, so the same file always gives the same vocal stem (the default is random)
+    subprocess.run(["demucs", "--two-stems=vocals", "--shifts", "0", "-o", workdir, "--mp3", audio],
                    check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL)
     return str(Path(workdir) / "htdemucs" / Path(audio).stem / "vocals.mp3")
@@ -106,6 +145,7 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--noise-db", type=float, default=-38)
     ap.add_argument("--min-silence", type=float, default=0.5)
+    ap.add_argument("--min-sound", type=float, default=0.6, help="ignore sound shorter than this (seconds)")
     ap.add_argument("--keep-tags", action="store_true")
     args = ap.parse_args()
 
@@ -113,15 +153,22 @@ def main():
         vocals = args.vocals or separate_vocals(args.audio, tmp)
         events, duration = detect_silences(vocals, args.noise_db, args.min_silence)
     lines = parse_lrc(Path(args.lrc).read_text(encoding="utf-8"))
-    kept, dropped, moved = refine_lines(
-        lines, sound_intervals(events, duration), duration, args.keep_tags)
+    sound = drop_blips(sound_intervals(events, duration), args.min_sound)
+    kept, dropped, moved = refine_lines(lines, sound, duration, args.keep_tags)
+    kept, stacked = drop_stacked(kept)
+    markers = end_markers(kept, sound, duration)
+    result = sorted(kept + markers, key=lambda x: (x[0], x[1] == ""))
 
     out = args.out or str(Path(args.lrc).with_suffix(".refined.lrc"))
-    Path(out).write_text(format_lrc(kept), encoding="utf-8")
+    Path(out).write_text(format_lrc(result), encoding="utf-8")
     for old, new, text in moved:
         print(f"moved   {old:6.2f} -> {new:6.2f}  {text}", file=sys.stderr)
     for start, text in dropped:
         print(f"dropped {start:6.2f}  {text}", file=sys.stderr)
+    for start, text in stacked:
+        print(f"stacked {start:6.2f}  {text}  (same moment as a later line)", file=sys.stderr)
+    for t, _ in markers:
+        print(f"ends    {t:6.2f}  (vocals stop)", file=sys.stderr)
     print(out)
 
 
