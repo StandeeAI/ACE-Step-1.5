@@ -20,7 +20,10 @@ cd {project_root}/{.claude or .codex}/skills/acestep/
 # 3. Generate with lyrics (recommended)
 ./scripts/acestep.sh generate -c "pop, female vocal, piano" -l "[Verse] Your lyrics here..." --duration 120 --language zh
 
-# 4. Output saved to: {project_root}/acestep_output/
+# 4. Always pass --title: 2-3 original words that fit the prompt and the song's
+#    mood (e.g. "Velvet Conga Sunset"). Output goes to its own folder:
+#    {project_root}/acestep_output/<YYYY_MM_DD_HHMMSS>_<title>/  (no title: random one)
+./scripts/acestep.sh generate --title "Velvet Conga Sunset" -c "..." -l "..."
 ```
 
 ## Workflow

@@ -24,8 +24,10 @@ export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.json"
-# Output dir at same level as .claude (go up 4 levels from scripts/)
-OUTPUT_DIR="$(cd "${SCRIPT_DIR}/../../../.." && pwd)/acestep_output"
+# Output root at same level as .claude (go up 4 levels from scripts/).
+# Each generation writes into its own subfolder (see set_run_dir).
+OUTPUT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)/acestep_output"
+OUTPUT_DIR="$OUTPUT_ROOT"
 DEFAULT_API_URL="http://127.0.0.1:8001"
 STAR_MARKER_FILE="${SCRIPT_DIR}/.first_gen_done"
 
@@ -76,6 +78,41 @@ json_get_array() {
     local json="$1"
     local path="$2"
     echo "$json" | jq -r "$path[]? // empty" 2>/dev/null
+}
+
+# Turn a title into a snake_case folder name ("Velvet Sunset" -> "velvet_sunset")
+slugify() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
+}
+
+# Pick a random 2-word title, faker style, for generations without --title
+random_title() {
+    local adjectives=(velvet neon golden midnight electric silver crimson dusty lazy cosmic
+        sunset satin chrome amber hazy gilded wild tropical moonlit smoky)
+    local nouns=(mirrorball groove summer flamingo highway cabaret carousel horizon lagoon
+        serenade jukebox paradise rhythm disco skyline fever orbit comet boulevard daydream)
+    echo "${adjectives[RANDOM % ${#adjectives[@]}]} ${nouns[RANDOM % ${#nouns[@]}]}"
+}
+
+# Choose the output folder for one generation.
+# Usage: set_run_dir <title> <explicit_dir>
+# An explicit dir wins; otherwise <root>/<YYYY_MM_DD_HHMMSS>_<title> (Laravel migration style).
+# Without a title a random one is used. An existing folder is never reused.
+set_run_dir() {
+    local title="$1" explicit="$2"
+    if [ -n "$explicit" ]; then
+        OUTPUT_DIR="$explicit"
+        return
+    fi
+    [ -z "$title" ] && title=$(random_title)
+    local name
+    name=$(slugify "$title")
+    [ -z "$name" ] && name=$(slugify "$(random_title)")
+    local stamp
+    stamp=$(date +%Y_%m_%d_%H%M%S)
+    local dir="${OUTPUT_ROOT}/${stamp}_${name}" n=2
+    while [ -e "$dir" ]; do dir="${OUTPUT_ROOT}/${stamp}_${name}_${n}"; n=$((n+1)); done
+    OUTPUT_DIR="$dir"
 }
 
 # Ensure output directory exists
@@ -788,10 +825,12 @@ cmd_generate() {
     local no_thinking=false no_format=false no_wait=false
     local model="" language="" steps="" guidance="" seed="" duration="" bpm="" batch=""
     local task_type="" src_audio="" cover_strength="" repaint_start="" repaint_end=""
-    local key_scale="" time_signature=""
+    local key_scale="" time_signature="" title="" output_dir=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --title) title="$2"; shift 2 ;;
+            --output-dir) output_dir="$2"; shift 2 ;;
             --caption|-c) caption="$2"; shift 2 ;;
             --lyrics|-l) lyrics="$2"; shift 2 ;;
             --description|-d) description="$2"; shift 2 ;;
@@ -818,6 +857,8 @@ cmd_generate() {
             *) [ -z "$caption" ] && caption="$1"; shift ;;
         esac
     done
+
+    set_run_dir "$title" "$output_dir"
 
     # If no caption but has description, use simple mode
     if [ -z "$caption" ] && [ -z "$description" ]; then
@@ -1068,16 +1109,19 @@ cmd_random() {
     check_deps
     ensure_config
 
-    local thinking="" no_thinking=false no_wait=false
+    local thinking="" no_thinking=false no_wait=false title="" output_dir=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             --thinking|-t) thinking="true"; shift ;;
             --no-thinking) no_thinking=true; shift ;;
             --no-wait) no_wait=true; shift ;;
+            --title) title="$2"; shift 2 ;;
+            --output-dir) output_dir="$2"; shift 2 ;;
             *) shift ;;
         esac
     done
+    set_run_dir "$title" "$output_dir"
 
     local api_url=$(ensure_connection)
 
@@ -1202,8 +1246,9 @@ show_help() {
     echo "  config      Manage configuration"
     echo ""
     echo "Output:"
-    echo "  Results saved to: $OUTPUT_DIR/<job_id>.json"
-    echo "  Audio files: $OUTPUT_DIR/<job_id>_1.mp3, ..."
+    echo "  Each generation gets its own folder: $OUTPUT_ROOT/<YYYY_MM_DD_HHMMSS>_<title>/"
+    echo "  Results saved to: <folder>/<job_id>.json"
+    echo "  Audio files: <folder>/<job_id>_1.mp3, ..."
     echo ""
     echo "Generate Options:"
     echo "  -c, --caption       Music style/genre description (caption mode)"
@@ -1216,6 +1261,8 @@ show_help() {
     echo "  --bpm               Beats per minute"
     echo "  --key-scale         Musical key (e.g. \"E minor\")"
     echo "  --time-signature    Time signature (e.g. \"4/4\")"
+    echo "  --title             Song title; names the output folder (default: random title)"
+    echo "  --output-dir        Explicit output folder (overrides --title)"
     echo ""
     echo "Cover/Repainting Options:"
     echo "  --src-audio         Source audio file path"
