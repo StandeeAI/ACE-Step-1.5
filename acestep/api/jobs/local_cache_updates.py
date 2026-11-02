@@ -74,6 +74,7 @@ def update_local_cache(
             seed_value = result.get("seed_value", "")
             lm_model = result.get("lm_model", "")
             dit_model = result.get("dit_model", "")
+            lrcs = result.get("lrcs") or []
 
             if audio_paths:
                 result_data = [
@@ -92,8 +93,9 @@ def update_local_cache(
                         "dit_model": dit_model,
                         "progress": 1.0,
                         "stage": "succeeded",
+                        **({"lrc": lrcs[index] if index < len(lrcs) else ""} if lrcs else {}),
                     }
-                    for path in audio_paths
+                    for index, path in enumerate(audio_paths)
                 ]
             else:
                 result_data = [{

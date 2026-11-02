@@ -33,6 +33,12 @@ class ReleaseTaskModelsTests(unittest.TestCase):
         self.assertEqual("<|audio_code_1|>", req.audio_code_string)
         self.assertAlmostEqual(0.75, req.cover_noise_strength)
 
+    def test_generate_lrc_defaults_off_and_is_accepted(self):
+        """generate_lrc must default to False so existing clients keep their behavior."""
+
+        self.assertFalse(GenerateMusicRequest().generate_lrc)
+        self.assertTrue(GenerateMusicRequest(generate_lrc=True).generate_lrc)
+
 
 if __name__ == "__main__":
     unittest.main()

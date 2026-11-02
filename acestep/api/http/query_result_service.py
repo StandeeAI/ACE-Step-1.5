@@ -81,6 +81,7 @@ def _build_store_result_payload(
         else:
             audio_paths = record.result.get("audio_paths", [])
             metas = record.result.get("metas", {}) or {}
+            lrcs = record.result.get("lrcs") or []
             result_data = [
                 {
                     "file": path,
@@ -97,8 +98,9 @@ def _build_store_result_payload(
                         "keyscale": metas.get("keyscale", ""),
                         "timesignature": metas.get("timesignature", ""),
                     },
+                    **({"lrc": lrcs[index] if index < len(lrcs) else ""} if lrcs else {}),
                 }
-                for path in audio_paths
+                for index, path in enumerate(audio_paths)
             ] if audio_paths else [{
                 "file": "",
                 "wave": "",

@@ -149,6 +149,29 @@ class LocalCacheUpdatesTests(unittest.TestCase):
         self.assertEqual(1.0, payload[0]["progress"])
         self.assertEqual("succeeded", payload[0]["stage"])
 
+    def test_update_local_cache_adds_lrc_only_when_present(self):
+        """Per-audio lrc is added when the result carries lrcs and absent otherwise."""
+
+        def _cached(extra):
+            cache = _FakeLocalCache()
+            store = _FakeStore({"job-3": SimpleNamespace(created_at=1.0, env="development")})
+            update_local_cache(
+                local_cache=cache,
+                store=store,
+                job_id="job-3",
+                result={"audio_paths": ["a.mp3", "b.mp3"], **extra},
+                status="succeeded",
+                map_status=_map_status,
+                result_key_prefix="prefix:",
+                result_expire_seconds=600,
+            )
+            return cache.calls[0][1]
+
+        with_lrc = _cached({"lrcs": ["[00:01.00]one"]})
+        self.assertEqual("[00:01.00]one", with_lrc[0]["lrc"])
+        self.assertEqual("", with_lrc[1]["lrc"])
+        self.assertNotIn("lrc", _cached({})[0])
+
     def test_update_local_cache_writes_failed_payload(self):
         """Failed status should emit failed stage with zero progress."""
 

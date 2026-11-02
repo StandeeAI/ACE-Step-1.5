@@ -14,10 +14,10 @@ class _FakeParser:
 
         self._values = values
 
-    def get(self, key: str):
-        """Return raw value for ``key`` from parser payload."""
+    def get(self, key: str, default=None):
+        """Return raw value for ``key`` from parser payload, or ``default``."""
 
-        return self._values.get(key)
+        return self._values.get(key, default)
 
     def str(self, key: str, default: str = "") -> str:
         """Return string value for ``key`` with default fallback."""
@@ -133,6 +133,22 @@ class ReleaseTaskRequestBuilderTests(unittest.TestCase):
 
         self.assertEqual("<|audio_code_7|>", request.audio_code_string)
         self.assertAlmostEqual(0.6, request.cover_noise_strength)
+
+    def test_build_request_forwards_generate_lrc(self):
+        """Builder should pass generate_lrc through and default it to False."""
+
+        def _build(values):
+            return build_generate_music_request(
+                parser=_FakeParser(values),
+                request_model_cls=lambda **kwargs: SimpleNamespace(**kwargs),
+                default_dit_instruction="default-instruction",
+                lm_default_temperature=0.85,
+                lm_default_cfg_scale=2.5,
+                lm_default_top_p=0.9,
+            )
+
+        self.assertTrue(_build({"generate_lrc": True}).generate_lrc)
+        self.assertFalse(_build({}).generate_lrc)
 
 
 if __name__ == "__main__":

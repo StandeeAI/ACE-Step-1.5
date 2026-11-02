@@ -13,6 +13,7 @@ from acestep.api.job_llm_preparation import (
     prepare_llm_generation_inputs,
 )
 from acestep.api.job_runtime_state import update_progress_job_cache
+from acestep.api.job_lrc import build_lrcs_for_result
 from acestep.api.job_result_payload import build_generation_success_response
 from acestep.api.job_generation_setup import build_generation_setup
 
@@ -185,7 +186,7 @@ def run_blocking_generate(
     )
 
     lm_model_name = os.getenv("ACESTEP_LM_MODEL_PATH", "acestep-5Hz-lm-0.6B")
-    return build_generation_success_response(
+    response = build_generation_success_response(
         result=result,
         params=params,
         bpm=prepared_inputs.bpm,
@@ -200,3 +201,13 @@ def run_blocking_generate(
         lm_model_name=lm_model_name,
         dit_model_name=selected_model_name,
     )
+    if getattr(req, "generate_lrc", False):
+        response["lrcs"] = build_lrcs_for_result(
+            dit_handler=selected_handler,
+            extra_outputs=result.extra_outputs,
+            num_audios=len(response.get("audio_paths", [])),
+            audio_duration=prepared_inputs.audio_duration,
+            vocal_language=req.vocal_language,
+            inference_steps=req.inference_steps,
+        )
+    return response

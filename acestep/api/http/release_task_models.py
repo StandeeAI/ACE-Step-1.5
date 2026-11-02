@@ -25,6 +25,9 @@ class GenerateMusicRequest(BaseModel):
     # - thinking=False: do not use LM to generate codes (dit behavior)
     # Regardless of thinking, if some metas are missing, server may use LM to fill them.
     thinking: bool = False
+
+    # When True, also return timed lyrics (LRC) per generated audio via DiT alignment.
+    generate_lrc: bool = False
     # Sample-mode requests auto-generate caption/lyrics/metas via LM (no user prompt).
     sample_mode: bool = False
     # Description for sample mode: auto-generate caption/lyrics from description query
