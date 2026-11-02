@@ -21,6 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from lrc_align import heard_in_sound, time_lines, transcribe
+
 LINE_RE = re.compile(r"^\[(\d+):(\d+(?:\.\d+)?)\](.*)$")
 TAG_RE = re.compile(r"^\[[^\]]+\]$")
 SILENCE_RE = re.compile(r"silence_(start|end): (-?\d+(?:\.\d+)?)")
@@ -136,6 +138,21 @@ def separate_vocals(audio, workdir):
     return str(Path(workdir) / "htdemucs" / Path(audio).stem / "vocals.mp3")
 
 
+def whisper_timing(lines, words, sound, duration):
+    """Time lines from heard words. Returns (result, report): result = LRC entries incl. end markers."""
+    texts = [t for _s, t in lines if t and not TAG_RE.match(t)]
+    timed, unheard = time_lines(texts, heard_in_sound(words, sound))
+    entries = [(start, text) for start, _end, text in timed]
+    for i, (_start, end, _text) in enumerate(timed):
+        stop = end + 0.3
+        nxt = timed[i + 1][0] if i + 1 < len(timed) else duration
+        if nxt - stop > 0.8:
+            entries.append((stop, ""))
+    report = [f"heard   {start:6.2f}-{end:6.2f}  {text}" for start, end, text in timed]
+    report += [f"unheard          {text}  (not sung, dropped)" for text in unheard]
+    return sorted(entries, key=lambda x: (x[0], x[1] == "")), report
+
+
 def main():
     """CLI entry point."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -143,6 +160,8 @@ def main():
     ap.add_argument("lrc")
     ap.add_argument("--vocals")
     ap.add_argument("--out")
+    ap.add_argument("--language", default="en", help="vocal language for Whisper")
+    ap.add_argument("--no-whisper", action="store_true", help="only use the silence-based method")
     ap.add_argument("--noise-db", type=float, default=-38)
     ap.add_argument("--min-silence", type=float, default=0.5)
     ap.add_argument("--min-sound", type=float, default=0.6, help="ignore sound shorter than this (seconds)")
@@ -152,23 +171,26 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         vocals = args.vocals or separate_vocals(args.audio, tmp)
         events, duration = detect_silences(vocals, args.noise_db, args.min_silence)
+        words = None if args.no_whisper else transcribe(vocals, tmp, args.language)
     lines = parse_lrc(Path(args.lrc).read_text(encoding="utf-8"))
     sound = drop_blips(sound_intervals(events, duration), args.min_sound)
-    kept, dropped, moved = refine_lines(lines, sound, duration, args.keep_tags)
-    kept, stacked = drop_stacked(kept)
-    markers = end_markers(kept, sound, duration)
-    result = sorted(kept + markers, key=lambda x: (x[0], x[1] == ""))
+
+    if words is not None:
+        result, report = whisper_timing(lines, words, sound, duration)
+    else:
+        print("warning: mlx_whisper not available, using the less precise silence-based timing", file=sys.stderr)
+        kept, dropped, moved = refine_lines(lines, sound, duration, args.keep_tags)
+        kept, stacked = drop_stacked(kept)
+        markers = end_markers(kept, sound, duration)
+        result = sorted(kept + markers, key=lambda x: (x[0], x[1] == ""))
+        report = [f"moved   {o:6.2f} -> {n:6.2f}  {t}" for o, n, t in moved]
+        report += [f"dropped {st:6.2f}  {t}" for st, t in dropped]
+        report += [f"stacked {st:6.2f}  {t}" for st, t in stacked]
 
     out = args.out or str(Path(args.lrc).with_suffix(".refined.lrc"))
     Path(out).write_text(format_lrc(result), encoding="utf-8")
-    for old, new, text in moved:
-        print(f"moved   {old:6.2f} -> {new:6.2f}  {text}", file=sys.stderr)
-    for start, text in dropped:
-        print(f"dropped {start:6.2f}  {text}", file=sys.stderr)
-    for start, text in stacked:
-        print(f"stacked {start:6.2f}  {text}  (same moment as a later line)", file=sys.stderr)
-    for t, _ in markers:
-        print(f"ends    {t:6.2f}  (vocals stop)", file=sys.stderr)
+    for line in report:
+        print(line, file=sys.stderr)
     print(out)
 
 
