@@ -26,9 +26,9 @@ export interface MVInputProps extends Record<string, unknown> {
 export const defaultProps: MVInputProps = {
   audioFileName: 'celebration.mp3',
   lyrics: [],
-  title: 'ACE-Step',
-  subtitle: 'v1.5',
-  creditText: 'Powered by Claude Code + ACE-Step',
+  title: 'Music Video',
+  subtitle: '',
+  creditText: '',
   durationInSeconds: 150,
   lyricOffset: -0.5,
   backgroundImage: '',

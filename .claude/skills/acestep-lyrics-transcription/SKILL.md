@@ -171,3 +171,13 @@ Config file: `scripts/config.json`
 # Custom output path
 ./scripts/acestep-lyrics-transcription.sh transcribe --audio song.mp3 --output ./my_lyrics.lrc
 ```
+
+## Refining an API-generated LRC (no transcription needed)
+
+If the track was generated with `generate_lrc=true` (the REST API then returns an `lrc` field per audio), the text is already right but the timing has two known flaws: the first line is pinned near 0:00 during an instrumental intro, and lines the model never sang still get a time. Fix both against the isolated vocal stem:
+
+```bash
+python3 scripts/refine_lrc.py <track.mp3> <track.lrc> [--vocals vocals.mp3] [--out refined.lrc]
+```
+
+It separates vocals with `demucs` (unless `--vocals` is given), detects where vocals sound with ffmpeg `silencedetect`, snaps lines that start in silence to the next vocal onset, drops lines with no vocals, and strips `[Verse]`-style tags (`--keep-tags` to keep them). Tune with `--noise-db` and `--min-silence`. Unit tests: `python3 -m unittest refine_lrc_test` in `scripts/`.

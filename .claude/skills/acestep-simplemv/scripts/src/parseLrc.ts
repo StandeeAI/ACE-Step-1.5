@@ -5,8 +5,8 @@ import {LyricLine} from './types';
  * LRC format: [mm:ss.xx] lyrics text
  * 
  * Example:
- *   [00:02.99] Version one point five is here today
- *   [00:07.00] ACE-Step's rising, leading the way
+ *   [00:02.99] First line of the song
+ *   [00:07.00] Second line of the song
  */
 export function parseLrc(lrcContent: string): LyricLine[] {
   const lines = lrcContent.split('\n').filter((line) => line.trim());
