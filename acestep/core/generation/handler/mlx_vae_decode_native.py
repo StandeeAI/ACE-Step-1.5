@@ -1,12 +1,67 @@
 """Native MLX VAE decode helpers for latent-to-audio conversion."""
 
 import math
+import os
+import threading
 import time as _time
+from contextlib import contextmanager, nullcontext
 
 import numpy as np
 import torch
 from loguru import logger
 from tqdm import tqdm
+
+# MLX keeps freed buffers in a reuse cache that may grow up to its GC limit
+# (about 95% of the recommended working set). VAE decode frees many large
+# intermediates of varying sizes, so without a cap the cache alone can fill most
+# of unified memory and push the system into swap. Cap it during decode only.
+_MLX_VAE_DECODE_CACHE_LIMIT_BYTES = 4 * 1024**3
+
+
+def _vae_decode_cache_limit_bytes():
+    """Return the MLX cache cap to use during VAE decode, or ``None`` for no cap.
+
+    ``ACESTEP_MLX_VAE_CACHE_MB`` overrides the 4 GiB default; ``0`` (or a negative value) disables the cap.
+    On a 32 GB Mac 1024 gave the lowest peak (turbo, 60 s song: 34 -> 20 GB) with bit-identical audio.
+    An unparsable value falls back to the default.
+    """
+    raw = os.environ.get("ACESTEP_MLX_VAE_CACHE_MB")
+    if raw is None:
+        return _MLX_VAE_DECODE_CACHE_LIMIT_BYTES
+    try:
+        megabytes = int(raw)
+    except ValueError:
+        return _MLX_VAE_DECODE_CACHE_LIMIT_BYTES
+    return megabytes * 1024**2 if megabytes > 0 else None
+
+
+# The cache limit is process-wide allocator state; serialize scopes so overlapping
+# decodes (multiple API/queue workers) cannot restore limits out of order.
+_MLX_CACHE_LIMIT_LOCK = threading.Lock()
+
+
+@contextmanager
+def _mlx_cache_limit(mx, limit_bytes):
+    """Temporarily cap the MLX buffer-cache limit at ``limit_bytes``.
+
+    A lower limit already set by the caller is kept. Scopes are serialized with a
+    process-wide lock.
+
+    Args:
+        mx: The ``mlx.core`` module.
+        limit_bytes: Maximum cache limit to apply inside the ``with`` block.
+
+    Yields:
+        None. The previous limit is restored on exit, including on exceptions.
+    """
+    with _MLX_CACHE_LIMIT_LOCK:
+        prev_limit = mx.set_cache_limit(limit_bytes)
+        try:
+            if prev_limit < limit_bytes:
+                mx.set_cache_limit(prev_limit)
+            yield
+        finally:
+            mx.set_cache_limit(prev_limit)
 
 
 class MlxVaeDecodeNativeMixin:
@@ -31,6 +86,9 @@ class MlxVaeDecodeNativeMixin:
     def _mlx_vae_decode(self, latents_torch):
         """Decode batched PyTorch latents using native MLX VAE decode.
 
+        The MLX buffer-cache limit is lowered for the duration of the decode and
+        restored afterwards, even if decoding raises.
+
         Args:
             latents_torch: Latent tensor shaped ``[batch, channels, frames]``.
 
@@ -51,13 +109,15 @@ class MlxVaeDecodeNativeMixin:
 
         decode_fn = self._resolve_mlx_decode_fn()
         audio_parts = []
-        for idx in range(batch_size):
-            decoded = self._mlx_decode_single(latents_mx[idx : idx + 1], decode_fn=decode_fn)
-            if decoded.dtype != mx.float32:
-                decoded = decoded.astype(mx.float32)
-            mx.eval(decoded)
-            audio_parts.append(np.array(decoded))
-            mx.clear_cache()
+        cache_limit = _vae_decode_cache_limit_bytes()
+        with (_mlx_cache_limit(mx, cache_limit) if cache_limit is not None else nullcontext()):
+            for idx in range(batch_size):
+                decoded = self._mlx_decode_single(latents_mx[idx : idx + 1], decode_fn=decode_fn)
+                if decoded.dtype != mx.float32:
+                    decoded = decoded.astype(mx.float32)
+                mx.eval(decoded)
+                audio_parts.append(np.array(decoded))
+                mx.clear_cache()
 
         t_decode = _time.time()
         audio_nlc = np.concatenate(audio_parts, axis=0)

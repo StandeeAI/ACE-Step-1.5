@@ -69,6 +69,7 @@ Without the MLX DiT (`use_mlx_dit=False`) the footprint is 14 GB, so the MLX cop
 | `ACESTEP_MPS_BF16=1` | PyTorch parts load in bfloat16 on MPS (`apple_precision.non_cuda_dtype`) |
 | `ACESTEP_MLX_DIT_BF16=1` | native MLX DiT in bfloat16 (from upstream PR #1251) **and** conversion straight to bf16, one tensor at a time (`convert_decoder_weights(..., dtype=)`); no float32 copy of the decoder is held |
 | (always, on MPS) | caches are emptied after loading (`apple_precision.release_unused_device_memory`) |
+| `ACESTEP_MLX_VAE_CACHE_MB` | cap on MLX's buffer cache while the VAE decodes (from upstream PR #1362, default 4096, `0` = no cap); bit-identical audio |
 | `ACESTEP_INIT_LLM=false` | `start_api_server_macos.sh` no longer overwrites a value given from outside |
 
 Results, same seed, 20 s song with lyrics:
@@ -87,6 +88,25 @@ The decoded audio of the xl-turbo run is bit-identical (same PCM checksum) to a 
 were applied from outside, and the lyric alignment (`generate_lrc`) is identical. bf16 against float32 is
 close but not identical: correlation 0.978 (10 s, no lyrics) and 0.997 (20 s, with lyrics), no NaN, level
 within a few dB in both directions. Whether it sounds as good is a listening question.
+
+## The memory-pressure peak is the VAE decode
+
+A steady footprint hides it. Sampling every second while generating (xl-turbo, 20 s song) showed 23 GB steady, then **35 GB** exactly during
+`[MLX-VAE] Decoded 1 sample(s), 500 latent frames` (float32), with the macOS pressure level at 4 (critical) and swap growing 6 -> 15 GB. The decode
+holds 12 GB (20 s song) to 20 GB (60 s) in MLX's buffer cache on top of the model.
+
+| Same seed, lean settings | Peak | Pressure | Swap growth | Total | Audio |
+|---|---|---|---|---|---|
+| turbo 60 s, no cap | 34 GB | 4 | +8.4 GB | 46 s | reference |
+| turbo 60 s, `ACESTEP_MLX_VAE_CACHE_MB=1024` | 20 GB | 1 | 0 | 31 s | identical |
+| turbo 60 s, + `ACESTEP_MLX_VAE_FP16=1` | 17 GB | 1 | 0 | 26 s | correlation 0.9991 |
+| xl-turbo 20 s, no cap | 35 GB | 4 | +8.3 GB | 72 s | reference |
+| xl-turbo 20 s, cap 1 GiB | 28 GB | 4 | +4.6 GB | 61 s | identical |
+| xl-turbo 20 s, cap 1 GiB + fp16 VAE | 25 GB | 2 | +0.3 GB | 51 s | correlation 0.9989 |
+| xl-turbo 60 s, cap 1 GiB + fp16 VAE | 26 GB | 2 | +2.6 GB | 71 s | |
+
+The cap is the main fix and also makes the decode faster. A smaller decode window (`ACESTEP_MLX_VAE_CHUNK` 192/256) did not lower the peak
+(256 was worse). fp16 in the VAE lowers the peak further and is needed to keep xl-turbo out of critical pressure; it changes the audio slightly.
 
 ## Things that did not work or have limits
 
@@ -113,7 +133,7 @@ rows are Metal/MLX buffers. Inside Python: `torch.mps.current_allocated_memory()
 | #1081 | closed (stale) | MLX + xl-turbo + 5Hz-4B drains memory on a 32 GB Mac mini; maintainer analysis; fix is PR #1097 (Autoscore) |
 | #1097 | open | stop the Autoscore unified-memory leak on MLX |
 | #1251 | open | opt-in bf16 for the native MLX DiT (included here) |
-| #1362 | open | cap the MLX buffer cache during native VAE decode (swap on long tracks) |
+| #1362 | open | cap the MLX buffer cache during native VAE decode (swap on long tracks); confirmed on this Mac and included here |
 | #1090 | open | unload the LM before the DiT phase |
 | #198 | closed (stale) | the API silently loads the LM on the first request and keeps ~4 GB |
 | #1336 | closed (stale) | MPS "disable upper limit for memory allocations" on an M1 Pro |
@@ -129,10 +149,10 @@ cd vendor/ACE-Step-1.5
 # defaults
 ./start_api_server_macos.sh
 # lean
-ACESTEP_INIT_LLM=false ACESTEP_MPS_BF16=1 ACESTEP_MLX_DIT_BF16=1 ./start_api_server_macos.sh
-# another model
-ACESTEP_CONFIG_PATH=acestep-v15-xl-turbo ACESTEP_INIT_LLM=false ACESTEP_MPS_BF16=1 ACESTEP_MLX_DIT_BF16=1 ./start_api_server_macos.sh
+ACESTEP_INIT_LLM=false ACESTEP_MPS_BF16=1 ACESTEP_MLX_DIT_BF16=1 ACESTEP_MLX_VAE_CACHE_MB=1024 ./start_api_server_macos.sh
+# another model (xl-turbo also wants the fp16 VAE on a 32 GB Mac)
+ACESTEP_CONFIG_PATH=acestep-v15-xl-turbo ACESTEP_INIT_LLM=false ACESTEP_MPS_BF16=1 ACESTEP_MLX_DIT_BF16=1 ACESTEP_MLX_VAE_CACHE_MB=1024 ACESTEP_MLX_VAE_FP16=1 ./start_api_server_macos.sh
 ```
 
-Unit tests: `uv run python -m unittest acestep.core.generation.handler.apple_precision_test acestep.models.mlx.dit_convert_test acestep.core.generation.handler.mlx_dit_init_test`
+Unit tests: `uv run python -m unittest acestep.core.generation.handler.apple_precision_test acestep.models.mlx.dit_convert_test acestep.core.generation.handler.mlx_dit_init_test acestep.core.generation.handler.mlx_vae_native_test`
 (one test in `init_service_test` (`...cuda_sync_cleanup_error`) failed before these changes as well).
