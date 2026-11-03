@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 def convert_decoder_weights(
     pytorch_model,
+    dtype=None,
 ) -> List[Tuple[str, "mx.array"]]:
     """Convert PyTorch decoder weights to a list of (name, mx.array) pairs
     suitable for ``mlx_decoder.load_weights()``.
@@ -24,6 +25,9 @@ def convert_decoder_weights(
 
     Args:
         pytorch_model: The full ``AceStepConditionGenerationModel`` (PyTorch).
+        dtype: Optional MLX dtype (for example ``mx.bfloat16``). When given, each tensor is cast and
+            evaluated before the next one is converted, so the float32 original is freed at once and the
+            peak stays near the size of the final weights instead of float32 plus the cast copy.
 
     Returns:
         List of (param_name, mx.array) pairs ready for ``model.load_weights()``.
@@ -58,7 +62,11 @@ def convert_decoder_weights(
         elif "rotary_emb" in key:
             continue
 
-        weights.append((new_key, mx.array(np_val)))
+        array = mx.array(np_val)
+        if dtype is not None:
+            array = array.astype(dtype)
+            mx.eval(array)
+        weights.append((new_key, array))
 
     logger.info(
         "[MLX-DiT] Converted %d decoder parameters to MLX format.", len(weights)
@@ -69,16 +77,18 @@ def convert_decoder_weights(
 def convert_and_load(
     pytorch_model,
     mlx_decoder: "MLXDiTDecoder",
+    dtype=None,
 ) -> None:
     """Convert PyTorch decoder weights and load them into an MLX decoder.
 
     Args:
         pytorch_model: The full AceStepConditionGenerationModel (PyTorch).
         mlx_decoder: An instance of ``MLXDiTDecoder`` (already constructed).
+        dtype: Optional MLX dtype to cast every weight to while converting (see ``convert_decoder_weights``).
     """
     import mlx.core as mx
 
-    weights = convert_decoder_weights(pytorch_model)
+    weights = convert_decoder_weights(pytorch_model, dtype=dtype)
     mlx_decoder.load_weights(weights)
     mx.eval(mlx_decoder.parameters())
     logger.info("[MLX-DiT] Weights loaded and evaluated successfully.")

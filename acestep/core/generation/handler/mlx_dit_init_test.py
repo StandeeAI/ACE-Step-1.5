@@ -94,6 +94,39 @@ class MlxDitInitMixinTests(unittest.TestCase):
         fake_decoder.materialize_static_buffers.assert_called_once_with()
         self.assertIs(host.mlx_decoder, fake_decoder)
 
+    def test_init_mlx_dit_bf16_converts_straight_to_bf16(self):
+        """With ACESTEP_MLX_DIT_BF16 the weights are converted to bf16 while loading (no float32 copy of the decoder)."""
+        host = _DitHost()
+        fake_mlx = types.ModuleType("acestep.models.mlx")
+        fake_mlx.mlx_available = lambda: True
+        fake_decoder = Mock()
+        fake_dit_model = types.ModuleType("acestep.models.mlx.dit_model")
+        fake_dit_model.MLXDiTDecoder = type("FakeDecoder", (), {"from_config": classmethod(lambda _cls, _cfg: fake_decoder)})
+        fake_dit_convert = types.ModuleType("acestep.models.mlx.dit_convert")
+        fake_dit_convert.convert_and_load = Mock()
+        fake_core = types.ModuleType("mlx.core")
+        fake_core.bfloat16 = "bf16"
+        fake_core.float32 = "f32"
+        fake_core.floating = "floating"
+        fake_core.array = type("FakeArray", (), {})
+        fake_core.issubdtype = lambda _a, _b: True
+        fake_core.eval = Mock()
+        fake_utils = types.ModuleType("mlx.utils")
+        fake_utils.tree_map = lambda fn, tree: tree
+        fake_pkg = types.ModuleType("mlx")
+        fake_pkg.core = fake_core
+        modules = {
+            "acestep.models.mlx": fake_mlx,
+            "acestep.models.mlx.dit_model": fake_dit_model,
+            "acestep.models.mlx.dit_convert": fake_dit_convert,
+            "mlx": fake_pkg,
+            "mlx.core": fake_core,
+            "mlx.utils": fake_utils,
+        }
+        with patch.dict(sys.modules, modules), patch.dict("os.environ", {"ACESTEP_MLX_DIT_BF16": "1"}):
+            self.assertTrue(host._init_mlx_dit(compile_model=False))
+        fake_dit_convert.convert_and_load.assert_called_once_with(host.model, fake_decoder, dtype="bf16")
+
 
 if __name__ == "__main__":
     unittest.main()

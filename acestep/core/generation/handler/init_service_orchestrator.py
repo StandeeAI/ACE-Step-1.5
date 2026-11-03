@@ -9,6 +9,7 @@ import torch
 from loguru import logger
 
 from acestep import gpu_config
+from acestep.core.generation.handler.apple_precision import non_cuda_dtype, release_unused_device_memory
 
 _ROCM_DTYPE_MAP = {
     "float32": torch.float32,
@@ -98,7 +99,7 @@ class InitServiceOrchestratorMixin:
                         "using float16 instead of bfloat16."
                     )
             else:
-                self.dtype = torch.bfloat16 if resolved_device == "xpu" else torch.float32
+                self.dtype = non_cuda_dtype(resolved_device)
             self.quantization = normalized_quantization
             try:
                 self._validate_quantization_setup(
@@ -207,6 +208,7 @@ class InitServiceOrchestratorMixin:
                 "vae_checkpoint": resolved_vae_variant,
             }
 
+            release_unused_device_memory(resolved_device)
             return status_msg, True
         except Exception as exc:
             self.model = None

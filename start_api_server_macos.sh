@@ -31,7 +31,7 @@ DOWNLOAD_SOURCE=""
 
 # LLM initialization settings
 # Values: auto (default), true (force enable), false (force disable)
-export ACESTEP_INIT_LLM=auto
+export ACESTEP_INIT_LLM="${ACESTEP_INIT_LLM:-auto}"
 # export ACESTEP_INIT_LLM=true
 # export ACESTEP_INIT_LLM=false
 
