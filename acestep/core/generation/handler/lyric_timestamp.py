@@ -47,6 +47,10 @@ class LyricTimestampMixin(LyricAlignmentCommonMixin):
         """
         if self.model is None:
             return self._lyric_timestamp_error("Model not initialized")
+        if getattr(self.model, "decoder", None) is None:
+            return self._lyric_timestamp_error(
+                "The PyTorch DiT decoder was not kept (ACESTEP_FREE_PYTORCH_DECODER=1): lyric alignment is unavailable"
+            )
 
         custom_layers_config = self._resolve_custom_layers_config(custom_layers_config)
 

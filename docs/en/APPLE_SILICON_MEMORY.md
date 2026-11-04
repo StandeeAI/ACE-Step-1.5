@@ -70,6 +70,7 @@ Without the MLX DiT (`use_mlx_dit=False`) the footprint is 14 GB, so the MLX cop
 | `ACESTEP_MLX_DIT_BF16=1` | native MLX DiT in bfloat16 (from upstream PR #1251) **and** conversion straight to bf16, one tensor at a time (`convert_decoder_weights(..., dtype=)`); no float32 copy of the decoder is held |
 | (always, on MPS) | caches are emptied after loading (`apple_precision.release_unused_device_memory`) |
 | `ACESTEP_MLX_VAE_CACHE_MB` | cap on MLX's buffer cache while the VAE decodes (from upstream PR #1362, default 4096, `0` = no cap); bit-identical audio |
+| `ACESTEP_FREE_PYTORCH_DECODER=1` | the PyTorch DiT decoder stays on the CPU, the MLX decoder is converted from it and the copy is dropped, so it never reaches the GPU (-3 GB turbo, -7 GB xl-turbo). `get_lyric_timestamp` / `generate_lrc` then answers with an error; if MLX does not start, the decoder is moved to the device after all |
 | `ACESTEP_INIT_LLM=false` | `start_api_server_macos.sh` no longer overwrites a value given from outside |
 
 Results, same seed, 20 s song with lyrics:
@@ -108,11 +109,22 @@ holds 12 GB (20 s song) to 20 GB (60 s) in MLX's buffer cache on top of the mode
 The cap is the main fix and also makes the decode faster. A smaller decode window (`ACESTEP_MLX_VAE_CHUNK` 192/256) did not lower the peak
 (256 was worse). fp16 in the VAE lowers the peak further and is needed to keep xl-turbo out of critical pressure; it changes the audio slightly.
 
+## Not loading the PyTorch decoder (`ACESTEP_FREE_PYTORCH_DECODER=1`)
+
+The MLX decoder does the diffusion; the PyTorch decoder is only used by the lyric aligner. Keeping it on the CPU for the conversion and then dropping it:
+
+| Lean settings + fp16 VAE | Steady | Peak while loading | 
+|---|---|---|
+| turbo | 13 GB -> **10 GB** | 14 -> 10 GB |
+| xl-turbo | 22 GB -> **15 GB** | 23 GB (checkpoint conversion) |
+
+xl-turbo 60 s song through `start_api_server_macos.sh`: 61 s, footprint 15-19 GB after loading (also during the VAE decode), memory pressure 1 all the time, swap flat.
+The price: `generate_lrc` is unavailable; callers that time lyrics another way (Whisper on the vocal stem) do not notice.
+
 ## Things that did not work or have limits
 
-- **Dropping the PyTorch decoder** after the MLX one is built saves 2-3 GB and gives bit-identical audio,
-  but `get_lyric_timestamp` (`lyric_timestamp.py`, `self.model.decoder(...)`, used by `generate_lrc`) still
-  calls it and fails with `TypeError: 'NoneType' object is not callable`. Not done.
+- **Dropping the PyTorch decoder after loading** saves only 2-3 GB (the MPS allocator keeps the freed blocks) and `get_lyric_timestamp` still calls it
+  (`TypeError: 'NoneType' object is not callable`). Hence `ACESTEP_FREE_PYTORCH_DECODER`, which never puts it on the GPU, with a clear error from the aligner.
 - A small MLX cache limit (`mx.set_cache_limit`) added nothing once the conversion is per tensor.
 - A switch of models (`/v1/init`) in a **float32** server did not give the memory back: turbo -> sft -> xl-turbo
   reached 50 GB (39 GB in swap). One bf16 observation (xl-turbo -> turbo ended at 14 GB) is not a test.
@@ -150,6 +162,8 @@ cd vendor/ACE-Step-1.5
 ./start_api_server_macos.sh
 # lean
 ACESTEP_INIT_LLM=false ACESTEP_MPS_BF16=1 ACESTEP_MLX_DIT_BF16=1 ACESTEP_MLX_VAE_CACHE_MB=1024 ./start_api_server_macos.sh
+# leanest (no lyric alignment from the server)
+ACESTEP_INIT_LLM=false ACESTEP_MPS_BF16=1 ACESTEP_MLX_DIT_BF16=1 ACESTEP_MLX_VAE_CACHE_MB=1024 ACESTEP_MLX_VAE_FP16=1 ACESTEP_FREE_PYTORCH_DECODER=1 ./start_api_server_macos.sh
 # another model (xl-turbo also wants the fp16 VAE on a 32 GB Mac)
 ACESTEP_CONFIG_PATH=acestep-v15-xl-turbo ACESTEP_INIT_LLM=false ACESTEP_MPS_BF16=1 ACESTEP_MLX_DIT_BF16=1 ACESTEP_MLX_VAE_CACHE_MB=1024 ACESTEP_MLX_VAE_FP16=1 ./start_api_server_macos.sh
 ```

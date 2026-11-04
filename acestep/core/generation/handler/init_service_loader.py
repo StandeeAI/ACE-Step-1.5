@@ -8,6 +8,7 @@ import torch
 from loguru import logger
 
 from acestep import gpu_config
+from .apple_precision import detach_decoder, free_pytorch_decoder_requested
 from .init_service_loader_components import InitServiceLoaderComponentsMixin
 
 
@@ -193,6 +194,12 @@ class InitServiceLoaderMixin(InitServiceLoaderComponentsMixin):
         self.config = self.model.config
         self._sync_alignment_config()
         self._apply_cuda_bool_argsort_workaround()
+
+        self._pending_decoder = None
+        if device == "mps" and getattr(self, "_mlx_dit_requested", False) and free_pytorch_decoder_requested():
+            # The MLX decoder is converted from this CPU copy and the copy is then dropped: the PyTorch decoder never reaches the GPU.
+            self._pending_decoder = detach_decoder(self.model)
+            logger.info("[initialize_service] PyTorch DiT decoder kept on CPU for the MLX conversion (ACESTEP_FREE_PYTORCH_DECODER=1).")
 
         if not self.offload_to_cpu:
             self.model = self.model.to(device).to(self.dtype)

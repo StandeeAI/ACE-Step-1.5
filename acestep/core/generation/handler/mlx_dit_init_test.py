@@ -127,6 +127,24 @@ class MlxDitInitMixinTests(unittest.TestCase):
             self.assertTrue(host._init_mlx_dit(compile_model=False))
         fake_dit_convert.convert_and_load.assert_called_once_with(host.model, fake_decoder, dtype="bf16")
 
+    def test_init_mlx_dit_converts_from_the_pending_cpu_decoder(self):
+        """When the loader kept the decoder on the CPU, the MLX conversion reads that copy instead of model.decoder."""
+        host = _DitHost()
+        pending = object()
+        host._pending_decoder = pending
+        fake_mlx = types.ModuleType("acestep.models.mlx")
+        fake_mlx.mlx_available = lambda: True
+        fake_decoder = Mock()
+        fake_dit_model = types.ModuleType("acestep.models.mlx.dit_model")
+        fake_dit_model.MLXDiTDecoder = type("FakeDecoder", (), {"from_config": classmethod(lambda _cls, _cfg: fake_decoder)})
+        fake_dit_convert = types.ModuleType("acestep.models.mlx.dit_convert")
+        fake_dit_convert.convert_and_load = Mock()
+        modules = {"acestep.models.mlx": fake_mlx, "acestep.models.mlx.dit_model": fake_dit_model, "acestep.models.mlx.dit_convert": fake_dit_convert}
+        with patch.dict(sys.modules, modules):
+            self.assertTrue(host._init_mlx_dit(compile_model=False))
+        source = fake_dit_convert.convert_and_load.call_args.args[0]
+        self.assertIs(pending, source.decoder)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -276,6 +276,24 @@ class LyricAlignmentMixinTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["error"], "Model did not return attentions")
 
+    def test_get_lyric_timestamp_explains_a_decoder_that_was_not_kept(self):
+        """With ACESTEP_FREE_PYTORCH_DECODER the decoder is None: a clear error instead of a TypeError."""
+        host = _Host(decoder=_Decoder(cross_attns=None))
+        host.model.decoder = None
+        pred, enc, enc_mask, ctx, lyric_ids = self._sample_inputs()
+
+        result = host.get_lyric_timestamp(
+            pred_latent=pred,
+            encoder_hidden_states=enc,
+            encoder_attention_mask=enc_mask,
+            context_latents=ctx,
+            lyric_token_ids=lyric_ids,
+            total_duration_seconds=3.0,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("ACESTEP_FREE_PYTORCH_DECODER", result["error"])
+
     def test_get_lyric_score_returns_error_when_attentions_missing(self):
         """Score generation should fail clearly when decoder returns no attentions."""
         decoder = _Decoder(cross_attns=None)

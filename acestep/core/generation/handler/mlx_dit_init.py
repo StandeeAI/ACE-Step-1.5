@@ -1,6 +1,7 @@
 """MLX DiT initialization helpers for Apple Silicon acceleration."""
 
 import os
+from types import SimpleNamespace
 
 from loguru import logger
 
@@ -33,13 +34,16 @@ class MlxDitInitMixin:
             from acestep.models.mlx.dit_convert import convert_and_load
 
             mlx_decoder = MLXDiTDecoder.from_config(self.config)
+            pending_decoder = getattr(self, "_pending_decoder", None)
+            # The loader may have kept the decoder on the CPU (ACESTEP_FREE_PYTORCH_DECODER): convert from that copy.
+            source = self.model if pending_decoder is None else SimpleNamespace(decoder=pending_decoder)
             if _mlx_dit_bf16_requested():
                 import mlx.core as mx
 
                 # Straight to bf16, one tensor at a time: no float32 copy of the whole decoder is ever held.
-                convert_and_load(self.model, mlx_decoder, dtype=mx.bfloat16)
+                convert_and_load(source, mlx_decoder, dtype=mx.bfloat16)
             else:
-                convert_and_load(self.model, mlx_decoder)
+                convert_and_load(source, mlx_decoder)
             bf16_applied = self._maybe_apply_mlx_dit_bf16(mlx_decoder)
             mlx_decoder.materialize_static_buffers()
             self.mlx_decoder = mlx_decoder

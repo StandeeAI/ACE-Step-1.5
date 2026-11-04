@@ -9,7 +9,11 @@ import torch
 from loguru import logger
 
 from acestep import gpu_config
-from acestep.core.generation.handler.apple_precision import non_cuda_dtype, release_unused_device_memory
+from acestep.core.generation.handler.apple_precision import (
+    non_cuda_dtype,
+    release_unused_device_memory,
+    settle_pending_decoder,
+)
 
 _ROCM_DTYPE_MAP = {
     "float32": torch.float32,
@@ -154,6 +158,7 @@ class InitServiceOrchestratorMixin:
             self._sync_model_code_if_needed(config_path, checkpoint_path)
 
             model_path = os.path.join(checkpoint_dir, config_path)
+            self._mlx_dit_requested = use_mlx_dit
             self._load_main_model_from_checkpoint(
                 model_checkpoint_path=model_path,
                 device=resolved_device,
@@ -177,6 +182,7 @@ class InitServiceOrchestratorMixin:
                 use_mlx_dit=use_mlx_dit,
                 mlx_compile_requested=mlx_compile_requested,
             )
+            settle_pending_decoder(self, resolved_device)
 
             status_msg = self._build_initialize_status_message(
                 device=resolved_device,

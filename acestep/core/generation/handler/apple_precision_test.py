@@ -72,5 +72,64 @@ class ReleaseMemoryTests(unittest.TestCase):
         empty.assert_called_once()
 
 
+class _FakeDecoder:
+    """Records where it was moved."""
+
+    def __init__(self):
+        self.moves = []
+
+    def to(self, target):
+        self.moves.append(target)
+        return self
+
+
+class _FakeHandler:
+    """Minimal handler state used by settle_pending_decoder."""
+
+    def __init__(self, decoder=None, use_mlx=False, mlx_decoder=None):
+        self.model = type("Model", (), {"decoder": None})()
+        self._pending_decoder = decoder
+        self.use_mlx_dit = use_mlx
+        self.mlx_decoder = mlx_decoder
+        self.dtype = torch.bfloat16
+
+
+class FreePytorchDecoderTests(unittest.TestCase):
+    """Holding the PyTorch decoder on the CPU and dropping it once MLX took over."""
+
+    def test_flag_is_opt_in(self):
+        """Off unless ACESTEP_FREE_PYTORCH_DECODER is truthy."""
+        self.assertFalse(precision.free_pytorch_decoder_requested({}))
+        self.assertTrue(precision.free_pytorch_decoder_requested({"ACESTEP_FREE_PYTORCH_DECODER": "1"}))
+
+    def test_detach_decoder_leaves_none_and_returns_it(self):
+        """The model keeps no decoder; the caller gets it."""
+        model = type("Model", (), {"decoder": object()})()
+        decoder = model.decoder
+        self.assertIs(decoder, precision.detach_decoder(model))
+        self.assertIsNone(model.decoder)
+
+    def test_settle_drops_the_cpu_decoder_when_mlx_took_over(self):
+        """MLX decoder active: nothing is put back, the pending copy is released."""
+        handler = _FakeHandler(decoder=_FakeDecoder(), use_mlx=True, mlx_decoder=object())
+        precision.settle_pending_decoder(handler, "mps")
+        self.assertIsNone(handler._pending_decoder)
+        self.assertIsNone(handler.model.decoder)
+
+    def test_settle_restores_the_decoder_when_mlx_failed(self):
+        """No MLX decoder: the PyTorch decoder goes back to the device in the handler dtype, so generation still works."""
+        decoder = _FakeDecoder()
+        handler = _FakeHandler(decoder=decoder, use_mlx=False)
+        precision.settle_pending_decoder(handler, "mps")
+        self.assertIs(decoder, handler.model.decoder)
+        self.assertEqual(["mps", torch.bfloat16], decoder.moves)
+
+    def test_settle_without_a_pending_decoder_does_nothing(self):
+        """The normal path is untouched."""
+        handler = _FakeHandler(decoder=None)
+        precision.settle_pending_decoder(handler, "mps")
+        self.assertIsNone(handler.model.decoder)
+
+
 if __name__ == "__main__":
     unittest.main()
