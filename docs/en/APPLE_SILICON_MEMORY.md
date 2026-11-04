@@ -121,13 +121,21 @@ The MLX decoder does the diffusion; the PyTorch decoder is only used by the lyri
 xl-turbo 60 s song through `start_api_server_macos.sh`: 61 s, footprint 15-19 GB after loading (also during the VAE decode), memory pressure 1 all the time, swap flat.
 The price: `generate_lrc` is unavailable; callers that time lyrics another way (Whisper on the vocal stem) do not notice.
 
+## A bf16 copy of the checkpoint, and switching models
+
+The xl-turbo checkpoint on the Hub is float32 (829 tensors, 19 GB) even though its config says bfloat16, and ACE-Step casts to bf16 on load. Writing the bf16 copy once
+(`safetensors`: cast each float32 tensor, save the four shards; 33 s, 9.3 GB) lowers the load: peak 23 -> 19 GB, file cache while loading 16.8 -> 10.7 GB, and the generated audio
+is bit-identical (same PCM checksum). Point `ACESTEP_CONFIG_PATH` at the new folder.
+
+With the lean settings, `/v1/init` model switches give the memory back: xl-turbo 15 GB -> turbo 10 GB -> xl-turbo 15 GB over four switches without growth (13-18 s each, 18-19 GB at the peak of a switch).
+
 ## Things that did not work or have limits
 
 - **Dropping the PyTorch decoder after loading** saves only 2-3 GB (the MPS allocator keeps the freed blocks) and `get_lyric_timestamp` still calls it
   (`TypeError: 'NoneType' object is not callable`). Hence `ACESTEP_FREE_PYTORCH_DECODER`, which never puts it on the GPU, with a clear error from the aligner.
 - A small MLX cache limit (`mx.set_cache_limit`) added nothing once the conversion is per tensor.
 - A switch of models (`/v1/init`) in a **float32** server did not give the memory back: turbo -> sft -> xl-turbo
-  reached 50 GB (39 GB in swap). One bf16 observation (xl-turbo -> turbo ended at 14 GB) is not a test.
+  reached 50 GB (39 GB in swap). In the bf16 server it does (see above).
 - `ACESTEP_INIT_LLM` is also set by `start_api_server_macos.sh` itself in stock ACE-Step; an env var from
   outside was silently overwritten there (fixed on this branch).
 
