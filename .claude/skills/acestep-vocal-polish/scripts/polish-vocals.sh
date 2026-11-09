@@ -1,12 +1,13 @@
 #!/bin/bash
 # Separate vocals from an ACE-Step track with demucs, treat them with ffmpeg, remix.
 # Usage: polish-vocals.sh <input_audio> [--preset subtle|vintage] [--out FILE]
-#        [--vocal-gain 1.65] [--music-gain 0.85] [--echo 0.14] [--lufs -15.5]
+#        [--vocal-gain 1.65] [--music-gain 0.85] [--echo 0.14] [--lufs -15.5] [--vocals-out FILE]
+# --vocals-out also writes the treated vocals alone (same chain, gain and tape wobble; not loudness-normalised).
 set -euo pipefail
 
-PRESET="subtle"; OUT=""; VOCAL_GAIN=""; MUSIC_GAIN="0.85"; ECHO=""; LUFS="-15.5"
+PRESET="subtle"; OUT=""; VOCALS_OUT=""; VOCAL_GAIN=""; MUSIC_GAIN="0.85"; ECHO=""; LUFS="-15.5"
 IN="${1:-}"
-[ -n "$IN" ] && [ -f "$IN" ] || { sed -n '2,5p' "$0"; exit 1; }
+[ -n "$IN" ] && [ -f "$IN" ] || { sed -n '2,6p' "$0"; exit 1; }
 shift
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -16,6 +17,7 @@ while [ $# -gt 0 ]; do
         --music-gain) MUSIC_GAIN="$2"; shift 2 ;;
         --echo) ECHO="$2"; shift 2 ;;
         --lufs) LUFS="$2"; shift 2 ;;
+        --vocals-out) VOCALS_OUT="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -47,11 +49,18 @@ DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$IN")"
 "$DEMUCS" --two-stems=vocals -o "$WORK" --mp3 "$IN" </dev/null >/dev/null 2>&1
 STEMS="$WORK/htdemucs/$BASE"
 
+# With --vocals-out the treated vocals are split off before the mix and get the same tape wobble and top cut as the mix.
+VOX_TAIL="[v];"; VOCALS_MAP=()
+if [ -n "$VOCALS_OUT" ]; then
+    VOX_TAIL=",asplit=2[v][vs];[vs]vibrato=f=0.6:d=${WOW},lowpass=f=14000[vo];"
+    VOCALS_MAP=(-map "[vo]" -q:a 2 "$VOCALS_OUT")
+fi
+
 ffmpeg -v error -y -i "$STEMS/vocals.mp3" -i "$STEMS/no_vocals.mp3" \
     -f lavfi -i "anoisesrc=color=pink:amplitude=${NOISE_AMP}:duration=${DUR}" -filter_complex "
-[0:a]${VOX_EQ},aecho=0.85:0.7:${ECHO_DELAY}:${ECHO},volume=${VOCAL_GAIN}[v];
+[0:a]${VOX_EQ},aecho=0.85:0.7:${ECHO_DELAY}:${ECHO},volume=${VOCAL_GAIN}${VOX_TAIL}
 [1:a]${MUSIC_FX}[b];
 [2:a]highpass=f=2000,lowpass=f=9000,volume=0.25[n];
 [b][v][n]amix=inputs=3:normalize=0:duration=first,vibrato=f=0.6:d=${WOW},lowpass=f=14000,loudnorm=I=${LUFS}:TP=-1.5[o]" \
-    -map "[o]" -q:a 2 "$OUT" </dev/null
+    -map "[o]" -q:a 2 "$OUT" ${VOCALS_MAP[@]+"${VOCALS_MAP[@]}"} </dev/null
 echo "$OUT"
